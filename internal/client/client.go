@@ -47,9 +47,11 @@ func (c *Client) Healthy() error {
 }
 
 type meta struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-	Jobs int    `json:"jobs"`
+	Kind  string   `json:"kind"`
+	Name  string   `json:"name"`
+	Jobs  int      `json:"jobs"`
+	Build []string `json:"build,omitempty"`
+	Pull  []string `json:"pull,omitempty"`
 }
 
 func (c *Client) SubmitAur(name string) (*queue.Job, error) {
@@ -58,6 +60,10 @@ func (c *Client) SubmitAur(name string) (*queue.Job, error) {
 
 func (c *Client) SubmitTree(kind, name string, jobs int, tarGz []byte) (*queue.Job, error) {
 	return c.post(meta{Kind: kind, Name: name, Jobs: jobs}, tarGz)
+}
+
+func (c *Client) SubmitStrategy(name string, jobs int, build, pull []string, tarGz []byte) (*queue.Job, error) {
+	return c.post(meta{Kind: queue.KindStrategy, Name: name, Jobs: jobs, Build: build, Pull: pull}, tarGz)
 }
 
 func (c *Client) post(m meta, tarGz []byte) (*queue.Job, error) {
@@ -187,6 +193,26 @@ func (c *Client) Download(id, name, dest string) error {
 	defer f.Close()
 	_, err = io.Copy(f, res.Body)
 	return err
+}
+
+func (c *Client) Host() (queue.HostInfo, error) {
+	req, err := c.authReq(http.MethodGet, "/v1/host", nil)
+	if err != nil {
+		return queue.HostInfo{}, err
+	}
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return queue.HostInfo{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return queue.HostInfo{}, fmt.Errorf("host: %s", res.Status)
+	}
+	var info queue.HostInfo
+	if err := json.NewDecoder(res.Body).Decode(&info); err != nil {
+		return queue.HostInfo{}, err
+	}
+	return info, nil
 }
 
 func (c *Client) List() ([]queue.Job, error) {

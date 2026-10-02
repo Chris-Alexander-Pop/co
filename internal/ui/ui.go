@@ -56,26 +56,6 @@ func Red(s string) string   { return wrap(red, s) }
 func Cyan(s string) string  { return wrap(cyan, s) }
 func Gray(s string) string  { return wrap(gray, s) }
 
-func Logo(tagline string) {
-	if !Enabled {
-		fmt.Fprintln(Out, "co — "+tagline)
-		return
-	}
-	bar := brand + "▌" + reset
-	fmt.Fprintln(Out)
-	fmt.Fprintf(Out, "  %s %s%sco%s %s\n", bar, bold, brand, reset, Dim("compile offload"))
-	fmt.Fprintf(Out, "  %s %s\n", bar, Dim(tagline))
-}
-
-func Heading(title string) {
-	fmt.Fprintln(Out)
-	if !Enabled {
-		fmt.Fprintf(Out, "  == %s ==\n", title)
-		return
-	}
-	fmt.Fprintf(Out, "  %s▌%s %s%s%s\n", brand, reset, bold, title, reset)
-}
-
 func Step(format string, a ...any) {
 	mark := "->"
 	if Enabled {

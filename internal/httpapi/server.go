@@ -22,6 +22,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}))
+	mux.HandleFunc("GET /v1/host", s.authed(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.Q.Host())
+	}))
 	mux.HandleFunc("GET /v1/jobs", s.authed(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.Q.List())
 	}))
@@ -45,9 +48,11 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type createReq struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-	Jobs int    `json:"jobs"`
+	Kind  string   `json:"kind"`
+	Name  string   `json:"name"`
+	Jobs  int      `json:"jobs"`
+	Build []string `json:"build"`
+	Pull  []string `json:"pull"`
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +73,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusAccepted, s.Q.SubmitAur(req.Name))
-	case queue.KindMake, queue.KindMakepkg:
+	case queue.KindMake, queue.KindMakepkg, queue.KindStrategy:
 		f, _, err := r.FormFile("tree")
 		if err != nil {
 			http.Error(w, "tree file required", http.StatusBadRequest)
@@ -80,7 +85,12 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		job, err := s.Q.SubmitTree(req.Kind, req.Name, req.Jobs, body)
+		var job *queue.Job
+		if req.Kind == queue.KindStrategy {
+			job, err = s.Q.SubmitStrategy(req.Name, req.Jobs, req.Build, req.Pull, body)
+		} else {
+			job, err = s.Q.SubmitTree(req.Kind, req.Name, req.Jobs, body)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -121,7 +131,7 @@ func (s *Server) artifacts(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	paths, err := queue.Packages(s.Q.SrcDir(id))
+	paths, err := s.Q.ArtifactPaths(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -144,7 +154,12 @@ func (s *Server) artifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad name", http.StatusBadRequest)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(s.Q.SrcDir(id), name))
+	path := s.Q.ArtifactFile(id, name)
+	if path == "" {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

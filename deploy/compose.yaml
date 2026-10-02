@@ -10,9 +10,20 @@ services:
       dockerfile: deploy/Dockerfile
     environment:
       CO_TOKEN: ${CO_TOKEN:?set CO_TOKEN}
+      # CO_CPUS caps build threads. Leave it empty to use every visible core.
+      CO_CPUS: ${CO_CPUS:-}
+    # CO_CPU_LIMIT is the container quota. 0 means no extra cap.
+    cpus: ${CO_CPU_LIMIT:-0}
     ports:
-      - "127.0.0.1:8787:8787"
+      # CO_PUBLISH=100.x.x.x:8787 on the tailnet. Default stays on localhost.
+      - "${CO_PUBLISH:-127.0.0.1:8787}:8787"
     volumes:
       - data:/var/lib/co
+      - src:/var/cache/co
+      - pacman:/var/cache/pacman/pkg
+      - ccache:/var/cache/ccache
 volumes:
   data:
+  src:
+  pacman:
+  ccache:

@@ -3,11 +3,9 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
 
 	"github.com/Chris-Alexander-Pop/co/internal/archive"
 	"github.com/Chris-Alexander-Pop/co/internal/client"
@@ -47,28 +45,11 @@ func packCwd() ([]byte, error) {
 }
 
 func waitJob(cli *client.Client, id string) (*queue.Job, error) {
-	var shown int
-	for {
-		job, err := cli.Get(id)
-		if err != nil {
-			return nil, err
-		}
-		logText, err := cli.Log(id)
-		if err == nil && len(logText) > shown {
-			io.WriteString(os.Stdout, logText[shown:])
-			shown = len(logText)
-		}
-		switch job.Status {
-		case queue.StatusSucceeded:
-			return job, nil
-		case queue.StatusFailed:
-			if job.Error != "" {
-				return job, fmt.Errorf("%s", job.Error)
-			}
-			return job, fmt.Errorf("job %s failed", id)
-		}
-		time.Sleep(time.Second)
+	job, err := follow(cli, id)
+	if err != nil {
+		return job, err
 	}
+	return job, nil
 }
 
 func downloadPkgs(cli *client.Client, id, dest string) ([]string, error) {

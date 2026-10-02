@@ -27,6 +27,6 @@ func main() {
 		log.Fatal(err)
 	}
 	srv := &httpapi.Server{Q: q, Token: token}
-	log.Printf("co-queue listening on %s", addr)
+	log.Printf("co-queue listening on %s (%d cpus)", addr, q.Host().CPUs)
 	log.Fatal(http.ListenAndServe(addr, srv.Handler()))
 }

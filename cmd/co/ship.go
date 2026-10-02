@@ -12,65 +12,7 @@ import (
 )
 
 func cmdShip(args []string) error {
-	modeFlag, rest, err := flagFallback(args)
-	if err != nil {
-		return err
-	}
-	noWait := false
-	for _, a := range rest {
-		if a == "--no-wait" {
-			noWait = true
-			continue
-		}
-		return fmt.Errorf("unknown flag %q", a)
-	}
-	cfg, err := load()
-	if err != nil {
-		return err
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	kind := queue.KindMake
-	if _, err := os.Stat(filepath.Join(wd, "PKGBUILD")); err == nil {
-		kind = queue.KindMakepkg
-	}
-	_, cli, err := reach(cfg, modeFlag)
-	if err != nil {
-		return err
-	}
-	if cli == nil {
-		if kind == queue.KindMakepkg {
-			return runLocal("makepkg", "-f", "--noconfirm", "--syncdeps")
-		}
-		return runLocal("make", fmt.Sprintf("-j%d", cfg.Jobs))
-	}
-	ui.Step("packing %s", filepath.Base(wd))
-	blob, err := packCwd()
-	if err != nil {
-		return err
-	}
-	job, err := cli.SubmitTree(kind, filepath.Base(wd), cfg.Jobs, blob)
-	if err != nil {
-		return err
-	}
-	ui.Success("queued %s (%s)", job.ID, kind)
-	if noWait {
-		return nil
-	}
-	if _, err := waitJob(cli, job.ID); err != nil {
-		return err
-	}
-	if kind == queue.KindMakepkg {
-		paths, err := downloadPkgs(cli, job.ID, wd)
-		if err != nil {
-			return err
-		}
-		return installPkgs(paths)
-	}
-	ui.Success("build finished")
-	return nil
+	return fmt.Errorf("co ship is gone. Run co in the project directory")
 }
 
 func cmdMakepkg(args []string) error {
@@ -79,12 +21,16 @@ func cmdMakepkg(args []string) error {
 		return err
 	}
 	install := true
+	bg := false
 	for _, a := range rest {
-		if a == "--no-install" {
+		switch a {
+		case "--no-install":
 			install = false
-			continue
+		case "--bg", "--no-wait":
+			bg = true
+		default:
+			return fmt.Errorf("unknown flag %q", a)
 		}
-		return fmt.Errorf("unknown flag %q", a)
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -113,6 +59,10 @@ func cmdMakepkg(args []string) error {
 	if err != nil {
 		return err
 	}
+	if bg {
+		hintQueued(job.ID)
+		return nil
+	}
 	if _, err := waitJob(cli, job.ID); err != nil {
 		return err
 	}
@@ -125,26 +75,6 @@ func cmdMakepkg(args []string) error {
 		return nil
 	}
 	return installPkgs(paths)
-}
-
-func cmdStatus() error {
-	cfg, err := load()
-	if err != nil {
-		return err
-	}
-	cli := clientFrom(cfg)
-	jobs, err := cli.List()
-	if err != nil {
-		return err
-	}
-	if len(jobs) == 0 {
-		ui.Info("queue empty")
-		return nil
-	}
-	for _, job := range jobs {
-		fmt.Printf("%s  %s  %s  %s\n", job.ID, job.Status, job.Kind, job.Name)
-	}
-	return nil
 }
 
 func cmdLogs(args []string) error {

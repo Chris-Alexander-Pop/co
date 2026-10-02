@@ -11,26 +11,30 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+	args := os.Args[1:]
+	var err error
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		err = cmdProject(args)
+	} else {
+		err = run(args[0], args[1:])
 	}
-	if err := run(os.Args[1], os.Args[2:]); err != nil {
+	if err != nil {
 		ui.ErrorBlock(err.Error())
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	ui.Logo("queue compiles on a builder, or build here if it is down")
+	ui.Logo("build on the queue, then install here")
 
 	type cmd struct{ name, args, desc string }
 	cmds := []cmd{
-		{"ship", "[--no-wait] [--fallback local|cancel]", "queue this directory (makepkg or make)"},
-		{"makepkg", "[--no-install] [--fallback local|cancel]", "build this PKGBUILD on the queue and install it"},
+		{"", "[--bg] [--fallback local|cancel]", "build this directory from its strategy, or its PKGBUILD"},
+		{"makepkg", "[--no-install] [--bg] [--fallback local|cancel]", "build this PKGBUILD on the queue and install it"},
 		{"aur", "upgrade [--fallback local|cancel]", "upgrade AUR packages via the queue"},
-		{"status", "", "list jobs on the builder"},
-		{"logs", "[id]", "print a job log (default: newest)"},
+		{"status", "[--once]", "live build meter, or one snapshot"},
+		{"finish", "", "wait for this directory's job, then install it"},
+		{"logs", "[id]", "print the raw build log"},
 	}
 	ui.Heading("Commands")
 	w := 0
@@ -63,7 +67,9 @@ func run(cmd string, args []string) error {
 	case "aur":
 		return cmdAur(args)
 	case "status":
-		return cmdStatus()
+		return cmdStatus(args)
+	case "finish":
+		return cmdFinish(args)
 	case "logs":
 		return cmdLogs(args)
 	default:

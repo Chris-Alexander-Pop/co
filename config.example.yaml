@@ -1,0 +1,7 @@
+# Copy to ~/.config/co/config.yaml and edit. Do not commit that file.
+url: http://127.0.0.1:8787
+token: change-me
+# local: build on this machine when the queue is down
+# cancel: exit non-zero so the caller (topgrade) shows a failed step
+fallback: local
+jobs: 8

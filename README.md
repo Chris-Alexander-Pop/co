@@ -10,6 +10,12 @@ Queue compiles on another machine, then install the results here. The command is
 co --bg --command cargo test
 ```
 
+`--seed-cache` builds on this machine instead of the queue, uploads ccache plus the Go and Cargo caches to the builder, then deletes the local seed under `~/.cache/co/seed`. Later remote jobs can reuse that warm cache. The builder must be reachable. It cannot be combined with `--bg`. Cache hits need compilers and toolchains close to the Arch builder's.
+
+```
+co --seed-cache --command cargo build --release
+```
+
 `co` is a client. `co-queue` is the server, meant to run in the Arch container in `deploy/`. It fills the builder's CPUs. A strategy build uses the `jobs` count from the client, and two of those run side by side when the threads fit. `co --command` and package builds (`makepkg`, AUR) take the whole machine one at a time. They install packages into the same container, and command jobs share one cargo home.
 
 Submitting the same tree again does not queue a second job and does not unpack over the one already there. The call returns the job that is queued, running, or finished with that same source, build commands, and pull list. A failed job can be submitted again. An AUR package that is already queued or running is not submitted twice. A later upgrade of that package still queues, because the recipe is fetched when the build starts.
@@ -27,6 +33,7 @@ If the queue cannot be reached, `fallback` in the config decides:
 co --command <command...>   run that command on the builder and bring binaries back
 co                   build this directory from its strategy, or its PKGBUILD
 co --bg              queue the build and return
+co --seed-cache      build here, upload ccache/Go/Cargo caches, prune local seed
 co status            live board: cores, running builds, queue, ETA
 co finish            install the newest finished build into its project directory
 co makepkg           build the PKGBUILD here and install the package
@@ -85,6 +92,8 @@ These caches stay on purpose. They are what make the next build faster:
 - source tarballs makepkg already downloaded
 - pacman's downloaded packages
 - packages installed into the container by earlier jobs
+
+`co --seed-cache` can fill ccache, the Go build cache, and Cargo's registry/git from a local build (`POST /v1/cache`), then remove the laptop seed directory.
 
 `jobs` in the client config is the `make -j` count for a strategy or a tree you upload. Keep it at or under `CO_CPUS` on the server. The server clamps to that budget and exports `MAKEFLAGS`, `NINJAFLAGS`, and `CMAKE_BUILD_PARALLEL_LEVEL` to match. Set `CO_CPUS` and `CO_CPU_LIMIT` in `deploy/.env` when the container should leave cores free for other work. That file is gitignored. `co status` draws those cores, the jobs still waiting, and an ETA. The ETA starts from the last successful build of that project (how long it took, and its files per second) and then scales by this run's own average speed. The first build of a project has no last run, so that one uses this session's average against the meter's remaining files, and it becomes the baseline for the next one. `GET /v1/host` reports `cpus`, `busy`, `running`, and `queued`.
 

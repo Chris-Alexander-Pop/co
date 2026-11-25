@@ -20,12 +20,11 @@ func cmdProject(args []string) error {
 	if err != nil {
 		return err
 	}
-	bg := false
+	seed, bg, rest, err := flagBuildOpts(rest)
+	if err != nil {
+		return err
+	}
 	for _, a := range rest {
-		if a == "--no-wait" || a == "--bg" {
-			bg = true
-			continue
-		}
 		return fmt.Errorf("unknown flag %q", a)
 	}
 	wd, err := os.Getwd()
@@ -55,8 +54,28 @@ func cmdProject(args []string) error {
 	if err != nil {
 		return err
 	}
+	if seed {
+		if cli == nil {
+			return fmt.Errorf("builder unavailable, --seed-cache needs the queue")
+		}
+		dirs, env, err := prepareSeed()
+		if err != nil {
+			return err
+		}
+		ui.Info("building on this machine to seed the builder cache")
+		if err := runShell(wd, build, env); err != nil {
+			return err
+		}
+		if err := uploadSeed(cli, dirs); err != nil {
+			return err
+		}
+		if err := pruneSeed(dirs); err != nil {
+			return err
+		}
+		return runInstall(wd, file.Install, cfg.Jobs, kernelRelease(wd))
+	}
 	if cli == nil {
-		if err := runShell(wd, build); err != nil {
+		if err := runShell(wd, build, nil); err != nil {
 			return err
 		}
 		return runInstall(wd, file.Install, cfg.Jobs, kernelRelease(wd))
@@ -185,10 +204,10 @@ func runInstall(dir string, lines []string, jobs int, release string) error {
 			return fmt.Errorf("kernelrelease is empty, so this command cannot run: %s", line)
 		}
 	}
-	return runShell(dir, install)
+	return runShell(dir, install, nil)
 }
 
-func runShell(dir string, lines []string) error {
+func runShell(dir string, lines []string, env []string) error {
 	for _, line := range lines {
 		ui.Step("%s", line)
 		cmd := exec.Command("bash", "-c", line)
@@ -196,6 +215,9 @@ func runShell(dir string, lines []string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Stdin = os.Stdin
+		if env != nil {
+			cmd.Env = env
+		}
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("%s: %w", line, err)
 		}

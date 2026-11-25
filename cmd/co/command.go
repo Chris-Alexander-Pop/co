@@ -33,12 +33,11 @@ func cmdCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	bg := false
+	seed, bg, rest, err := flagBuildOpts(rest)
+	if err != nil {
+		return err
+	}
 	for _, a := range rest {
-		if a == "--no-wait" || a == "--bg" {
-			bg = true
-			continue
-		}
 		return fmt.Errorf("unknown flag %q", a)
 	}
 	wd, err := os.Getwd()
@@ -53,8 +52,25 @@ func cmdCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if seed {
+		if cli == nil {
+			return fmt.Errorf("builder unavailable, --seed-cache needs the queue")
+		}
+		dirs, env, err := prepareSeed()
+		if err != nil {
+			return err
+		}
+		ui.Info("building on this machine to seed the builder cache")
+		if err := runArgv(wd, cmd, env); err != nil {
+			return err
+		}
+		if err := uploadSeed(cli, dirs); err != nil {
+			return err
+		}
+		return pruneSeed(dirs)
+	}
 	if cli == nil {
-		return runArgv(wd, cmd)
+		return runArgv(wd, cmd, nil)
 	}
 	ui.Step("packing %s", filepath.Base(wd))
 	var buf bytes.Buffer
@@ -77,13 +93,16 @@ func cmdCommand(args []string) error {
 	return fetchCommandOutputs(cli, done.ID, wd)
 }
 
-func runArgv(dir string, argv []string) error {
+func runArgv(dir string, argv []string, env []string) error {
 	ui.Step("%s", strings.Join(argv, " "))
 	c := exec.Command(argv[0], argv[1:]...)
 	c.Dir = dir
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	c.Stdin = os.Stdin
+	if env != nil {
+		c.Env = env
+	}
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
 	}

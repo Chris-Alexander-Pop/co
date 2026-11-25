@@ -36,7 +36,7 @@ func cmdAur(args []string) error {
 	}
 	if cli == nil {
 		ui.Step("yay -Sua")
-		return runLocal("yay", "-Sua", "--noconfirm")
+		return runLocal("yay", nil, "-Sua", "--noconfirm")
 	}
 	out, err := exec.Command("yay", "-Qua").Output()
 	if err != nil && len(out) == 0 {

@@ -247,3 +247,64 @@ func (c *Client) authReq(method, path string, body io.Reader) (*http.Request, er
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	return req, nil
 }
+
+// CachePart summarizes one archive applied by UploadCache.
+type CachePart struct {
+	Name  string `json:"name"`
+	Bytes int64  `json:"bytes"`
+}
+
+// CacheResult is the response from POST /v1/cache.
+type CacheResult struct {
+	Parts []CachePart `json:"parts"`
+}
+
+// UploadCache pushes gzipped tar archives of ccache, Go, and/or Cargo caches.
+// Empty slices are omitted.
+func (c *Client) UploadCache(ccache, gocache, cargo []byte) (*CacheResult, error) {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	add := func(name string, data []byte) error {
+		if len(data) == 0 {
+			return nil
+		}
+		part, err := w.CreateFormFile(name, name+".tar.gz")
+		if err != nil {
+			return err
+		}
+		_, err = part.Write(data)
+		return err
+	}
+	if err := add("ccache", ccache); err != nil {
+		return nil, err
+	}
+	if err := add("gocache", gocache); err != nil {
+		return nil, err
+	}
+	if err := add("cargo", cargo); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.Base+"/v1/cache", &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("upload cache: %s: %s", res.Status, bytes.TrimSpace(b))
+	}
+	var out CacheResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

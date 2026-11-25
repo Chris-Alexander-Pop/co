@@ -35,9 +35,9 @@ func usage() {
 
 	type cmd struct{ name, args, desc string }
 	cmds := []cmd{
-		{"--command", "<command...>", "run it on the builder and bring binaries back. --bg and --fallback come first"},
-		{"", "[--bg] [--fallback local|cancel]", "build this directory from its strategy, or its PKGBUILD"},
-		{"makepkg", "[--no-install] [--bg] [--fallback local|cancel]", "build this PKGBUILD on the queue and install it"},
+		{"--command", "<command...>", "run it on the builder and bring binaries back. --bg, --fallback, and --seed-cache come first"},
+		{"", "[--bg] [--seed-cache] [--fallback local|cancel]", "build this directory from its strategy, or its PKGBUILD"},
+		{"makepkg", "[--no-install] [--bg] [--seed-cache] [--fallback local|cancel]", "build this PKGBUILD on the queue and install it"},
 		{"aur", "upgrade [--fallback local|cancel]", "upgrade AUR packages via the queue"},
 		{"status", "[--once]", "live build meter, or one snapshot"},
 		{"finish", "", "install the newest finished build"},

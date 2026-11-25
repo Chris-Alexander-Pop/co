@@ -303,10 +303,13 @@ func repoHas(name string) bool {
 	return exec.Command("pacman", "-Si", name).Run() == nil
 }
 
-func runLocal(name string, args ...string) error {
+func runLocal(name string, env []string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+	if env != nil {
+		cmd.Env = env
+	}
 	return cmd.Run()
 }

@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,12 +10,18 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Chris-Alexander-Pop/co/internal/archive"
+	"github.com/Chris-Alexander-Pop/co/internal/deps"
 	"github.com/Chris-Alexander-Pop/co/internal/queue"
 )
 
 type Server struct {
 	Q     *queue.Queue
 	Token string
+	// Optional overrides for cache upload destinations (tests).
+	CcacheDir string
+	GoCache   string
+	CargoHome string
 }
 
 func (s *Server) Handler() http.Handler {
@@ -29,11 +36,33 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, s.Q.List())
 	}))
 	mux.HandleFunc("POST /v1/jobs", s.authed(s.create))
+	mux.HandleFunc("POST /v1/cache", s.authed(s.cache))
 	mux.HandleFunc("GET /v1/jobs/{id}", s.authed(s.one))
 	mux.HandleFunc("GET /v1/jobs/{id}/log", s.authed(s.log))
 	mux.HandleFunc("GET /v1/jobs/{id}/artifacts", s.authed(s.artifacts))
 	mux.HandleFunc("GET /v1/jobs/{id}/artifacts/{name}", s.authed(s.artifact))
 	return mux
+}
+
+func (s *Server) ccacheDir() string {
+	if s.CcacheDir != "" {
+		return s.CcacheDir
+	}
+	return "/var/cache/ccache"
+}
+
+func (s *Server) goCacheDir() string {
+	if s.GoCache != "" {
+		return s.GoCache
+	}
+	return deps.GoCache
+}
+
+func (s *Server) cargoHomeDir() string {
+	if s.CargoHome != "" {
+		return s.CargoHome
+	}
+	return deps.CargoHome
 }
 
 func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
@@ -102,6 +131,50 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unknown kind", http.StatusBadRequest)
 	}
+}
+
+type cachePart struct {
+	Name  string `json:"name"`
+	Bytes int64  `json:"bytes"`
+}
+
+func (s *Server) cache(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(8 << 30); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dests := map[string]string{
+		"ccache":  s.ccacheDir(),
+		"gocache": s.goCacheDir(),
+		"cargo":   s.cargoHomeDir(),
+	}
+	var parts []cachePart
+	for name, dest := range dests {
+		f, _, err := r.FormFile(name)
+		if err != nil {
+			continue
+		}
+		body, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := os.MkdirAll(dest, 0o755); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := archive.Unpack(bytes.NewReader(body), dest); err != nil {
+			http.Error(w, name+": "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		parts = append(parts, cachePart{Name: name, Bytes: int64(len(body))})
+	}
+	if len(parts) == 0 {
+		http.Error(w, "no cache parts", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"parts": parts})
 }
 
 func (s *Server) one(w http.ResponseWriter, r *http.Request) {

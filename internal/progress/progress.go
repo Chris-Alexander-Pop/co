@@ -22,7 +22,13 @@ func New() *Tracker {
 	return &Tracker{target: 200, phase: "compile"}
 }
 
-var action = regexp.MustCompile(`^[ \t]*(CC(?: \[[A-Z]\])?|AS|LD|AR|LDS|X32|VDSO2C|VDSO|OBJCOPY|GEN|HOSTCC|HOSTLD|CHK|SHIPPED|INSTALL|DEPMOD|MODPOST|WRAP|CPP)[ \t]+(\S+)`)
+var (
+	action    = regexp.MustCompile(`^[ \t]*(CC(?: \[[A-Z]\])?|AS|LD|AR|LDS|X32|VDSO2C|VDSO|OBJCOPY|GEN|HOSTCC|HOSTLD|CHK|SHIPPED|INSTALL|DEPMOD|MODPOST|WRAP|CPP)[ \t]+(\S+)`)
+	phaseLine = regexp.MustCompile(`^==> Starting ([A-Za-z]+)\(\)`)
+	testFile  = regexp.MustCompile(`^Running\s+(\S+\.exp)\b`)
+	srcFile   = regexp.MustCompile(`(?:^|\s)(\S+\.(?:cc|cpp|cxx|f90|go|c|C|s|S|f|F))(?:\s|\\)*$`)
+	objFile   = regexp.MustCompile(`(?:^|\s)-o\s+(\S+\.o)\b`)
+)
 
 // Feed adds the next chunk of log text. Chunks may split a line.
 func (t *Tracker) Feed(chunk string) {
@@ -42,11 +48,35 @@ func (t *Tracker) Feed(chunk string) {
 }
 
 func (t *Tracker) note(line string) {
-	m := action.FindStringSubmatch(line)
-	if m == nil {
+	if m := action.FindStringSubmatch(line); m != nil {
+		t.see(m[1], m[2], true)
 		return
 	}
-	verb, file := m[1], m[2]
+	if m := phaseLine.FindStringSubmatch(line); m != nil {
+		switch m[1] {
+		case "check":
+			t.phase = "check"
+		case "package":
+			t.phase = "package"
+		case "build":
+			t.phase = "compile"
+		}
+		t.Verb = m[1]
+		t.File = ""
+		return
+	}
+	if m := testFile.FindStringSubmatch(line); m != nil {
+		t.phase = "check"
+		t.Verb = "check"
+		t.File = baseName(m[1])
+		return
+	}
+	if file := compileName(line); file != "" {
+		t.see("CC", file, t.phase == "compile")
+	}
+}
+
+func (t *Tracker) see(verb, file string, count bool) {
 	t.Verb = verb
 	t.File = file
 	switch {
@@ -56,10 +86,28 @@ func (t *Tracker) note(line string) {
 		t.phase = "install"
 		t.installs++
 	default:
-		if t.phase == "compile" {
+		if count && t.phase == "compile" {
 			t.compiled++
 		}
 	}
+}
+
+func compileName(line string) string {
+	if m := srcFile.FindStringSubmatch(line); m != nil {
+		return baseName(m[1])
+	}
+	if m := objFile.FindStringSubmatch(line); m != nil {
+		return baseName(m[1])
+	}
+	return ""
+}
+
+func baseName(p string) string {
+	p = strings.Trim(p, `"'`)
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
 
 // Compiled is how many compile lines have been seen.
@@ -73,6 +121,10 @@ func (t *Tracker) Percent(done bool) int {
 	switch t.phase {
 	case "depmod":
 		return 98
+	case "package":
+		return 96
+	case "check":
+		return 90
 	case "install":
 		p := 88 + t.installs/30
 		if p > 97 {

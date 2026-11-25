@@ -73,7 +73,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusAccepted, s.Q.SubmitAur(req.Name))
-	case queue.KindMake, queue.KindMakepkg, queue.KindStrategy:
+	case queue.KindMake, queue.KindMakepkg, queue.KindStrategy, queue.KindCommand:
 		f, _, err := r.FormFile("tree")
 		if err != nil {
 			http.Error(w, "tree file required", http.StatusBadRequest)
@@ -86,9 +86,12 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var job *queue.Job
-		if req.Kind == queue.KindStrategy {
+		switch req.Kind {
+		case queue.KindStrategy:
 			job, err = s.Q.SubmitStrategy(req.Name, req.Jobs, req.Build, req.Pull, body)
-		} else {
+		case queue.KindCommand:
+			job, err = s.Q.SubmitCommand(req.Name, req.Jobs, req.Build, body)
+		default:
 			job, err = s.Q.SubmitTree(req.Kind, req.Name, req.Jobs, body)
 		}
 		if err != nil {

@@ -66,6 +66,10 @@ func (c *Client) SubmitStrategy(name string, jobs int, build, pull []string, tar
 	return c.post(meta{Kind: queue.KindStrategy, Name: name, Jobs: jobs, Build: build, Pull: pull}, tarGz)
 }
 
+func (c *Client) SubmitCommand(name string, jobs int, argv []string, tarGz []byte) (*queue.Job, error) {
+	return c.post(meta{Kind: queue.KindCommand, Name: name, Jobs: jobs, Build: argv}, tarGz)
+}
+
 func (c *Client) post(m meta, tarGz []byte) (*queue.Job, error) {
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)

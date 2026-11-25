@@ -22,8 +22,12 @@ services:
       - src:/var/cache/co
       - pacman:/var/cache/pacman/pkg
       - ccache:/var/cache/ccache
+      - cargo-reg:/opt/cargo/registry
+      - cargo-git:/opt/cargo/git
 volumes:
   data:
   src:
   pacman:
   ccache:
+  cargo-reg:
+  cargo-git:

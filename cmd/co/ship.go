@@ -59,6 +59,7 @@ func cmdMakepkg(args []string) error {
 	if err != nil {
 		return err
 	}
+	noteSame(job)
 	if bg {
 		hintQueued(job.ID)
 		return nil

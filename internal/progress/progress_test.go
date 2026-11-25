@@ -29,6 +29,33 @@ func TestSplitChunk(t *testing.T) {
 	}
 }
 
+func TestGCCLines(t *testing.T) {
+	tr := New()
+	tr.Feed("==> Starting build()...\n")
+	if tr.Verb != "build" || tr.File != "" {
+		t.Fatalf("phase %s %s", tr.Verb, tr.File)
+	}
+	tr.Feed("g++ -O2 -c -o netclient.o /src/libcody/netclient.cc\n")
+	tr.Feed("  -MMD -MP -MF packet.d -c -o packet.o /src/libcody/packet.cc\n")
+	if tr.File != "packet.cc" || tr.Verb != "CC" || tr.Compiled() != 2 {
+		t.Fatalf("compile %s %s %d", tr.Verb, tr.File, tr.Compiled())
+	}
+	if tr.Percent(false) < 1 {
+		t.Fatal(tr.Percent(false))
+	}
+	tr.Feed("==> Starting check()...\n")
+	tr.Feed("Running /src/gcc14/libstdc++-v3/testsuite/libstdc++-dg/conformance.exp ...\n")
+	if tr.Verb != "check" || tr.File != "conformance.exp" {
+		t.Fatalf("check %s %s", tr.Verb, tr.File)
+	}
+	if tr.Percent(false) != 90 {
+		t.Fatalf("percent %d", tr.Percent(false))
+	}
+	if tr.Compiled() != 2 {
+		t.Fatalf("tests counted as compiles: %d", tr.Compiled())
+	}
+}
+
 func TestInstallPhase(t *testing.T) {
 	tr := New()
 	tr.Feed("  CC      init/main.o\n  INSTALL include/bpf/bpf.h\n  INSTALL out/lib/modules/foo.ko\n  DEPMOD  7.2.6\n")

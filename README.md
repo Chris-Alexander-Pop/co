@@ -1,8 +1,18 @@
-# co
+# compile-offload
 
-Queue compiles on another machine, then install the results here.
+Queue compiles on another machine, then install the results here. The command is `co`.
 
-`co` is a client. `co-queue` is the server, meant to run in the Arch container in `deploy/`. It fills the builder's CPUs. A strategy build uses the `jobs` count from the client, and two of those run side by side when the threads fit. Package builds (`makepkg`, AUR) take the whole machine one at a time, because they install into the same container.
+`co --command cargo build --release` runs that command on the builder. The current directory is uploaded as the source tree. `target`, `node_modules`, and `.cache` are left out. The builder installs missing tools, including a Rust toolchain with the wasm32 target when the command uses cargo. New binaries from `cargo install` or `go install` are copied into `~/.cargo/bin` here. Executables written to `target/release` or `target/debug` are copied back into this tree.
+
+`--bg` and `--fallback` go before `--command`:
+
+```
+co --bg --command cargo test
+```
+
+`co` is a client. `co-queue` is the server, meant to run in the Arch container in `deploy/`. It fills the builder's CPUs. A strategy build uses the `jobs` count from the client, and two of those run side by side when the threads fit. `co --command` and package builds (`makepkg`, AUR) take the whole machine one at a time. They install packages into the same container, and command jobs share one cargo home.
+
+Submitting the same tree again does not queue a second job and does not unpack over the one already there. The call returns the job that is queued, running, or finished with that same source, build commands, and pull list. A failed job can be submitted again. An AUR package that is already queued or running is not submitted twice. A later upgrade of that package still queues, because the recipe is fetched when the build starts.
 
 If the queue cannot be reached, `fallback` in the config decides:
 
@@ -14,10 +24,11 @@ If the queue cannot be reached, `fallback` in the config decides:
 ## Layout
 
 ```
+co --command <command...>   run that command on the builder and bring binaries back
 co                   build this directory from its strategy, or its PKGBUILD
 co --bg              queue the build and return
 co status            live board: cores, running builds, queue, ETA
-co finish            pull the finished build and install it
+co finish            install the newest finished build into its project directory
 co makepkg           build the PKGBUILD here and install the package
 co aur upgrade       upgrade AUR packages through the queue
 co logs [id]         print the raw build log
@@ -41,7 +52,7 @@ build:
 pull:
   - out
 install:
-  - sudo rsync -a out/lib/modules/ /lib/modules/
+  - sudo rsync -a --chown=root:root out/lib/modules/ /lib/modules/
   - sudo install -D out/boot/vmlinuz /boot/vmlinuz-linux-zen-{kernelrelease}
   - sudo mkinitcpio -k {kernelrelease} -g /boot/initramfs-linux-zen-{kernelrelease}.img
   - sudo grub-mkconfig -o /boot/grub/grub.cfg
@@ -69,6 +80,8 @@ The build directory is deleted when a job finishes. The log and the built packag
 These caches stay on purpose. They are what make the next build faster:
 
 - ccache, capped at 20 GB
+- the Rust toolchain under `/opt/rustup`, and the cargo registry and git checkouts
+- the Go build cache
 - source tarballs makepkg already downloaded
 - pacman's downloaded packages
 - packages installed into the container by earlier jobs
@@ -78,3 +91,7 @@ These caches stay on purpose. They are what make the next build faster:
 ## Topgrade
 
 A custom command can call `co aur upgrade`. Pacman itself stays on the laptop. When the queue is down and `fallback` is `local`, that command builds with `yay` here instead.
+
+Each package base is built, pulled back, and installed here before the next one starts. Split packages share one repo: `gcc14-libs` is cloned as `gcc14`. AUR dependencies that pacman cannot install, such as `unionfs-fuse` or `libudev0-shim`, are built and installed first. If the builder cannot install the result, the package file is still pulled and installed here.
+
+If a package fails and there is no package file, co asks whether to skip it and continue. Packages already installed stay installed.

@@ -22,6 +22,29 @@ func TestFindByDir(t *testing.T) {
 	}
 }
 
+func TestByName(t *testing.T) {
+	projects := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "zen-kernel")
+	body := "dir: " + dir + "\nbuild:\n  - make\n"
+	if err := os.WriteFile(filepath.Join(projects, "custom.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ByName(projects, "zen-kernel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Dir != dir {
+		t.Fatalf("got %#v", got)
+	}
+	miss, err := ByName(projects, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if miss != nil {
+		t.Fatalf("got %#v", miss)
+	}
+}
+
 func TestFindMiss(t *testing.T) {
 	projects := t.TempDir()
 	got, err := Find(projects, t.TempDir())

@@ -12,8 +12,14 @@ import (
 
 func main() {
 	args := os.Args[1:]
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
+		usage()
+		return
+	}
 	var err error
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+	if _, _, ok := splitCommand(args); ok {
+		err = cmdCommand(args)
+	} else if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		err = cmdProject(args)
 	} else {
 		err = run(args[0], args[1:])
@@ -29,11 +35,12 @@ func usage() {
 
 	type cmd struct{ name, args, desc string }
 	cmds := []cmd{
+		{"--command", "<command...>", "run it on the builder and bring binaries back. --bg and --fallback come first"},
 		{"", "[--bg] [--fallback local|cancel]", "build this directory from its strategy, or its PKGBUILD"},
 		{"makepkg", "[--no-install] [--bg] [--fallback local|cancel]", "build this PKGBUILD on the queue and install it"},
 		{"aur", "upgrade [--fallback local|cancel]", "upgrade AUR packages via the queue"},
 		{"status", "[--once]", "live build meter, or one snapshot"},
-		{"finish", "", "wait for this directory's job, then install it"},
+		{"finish", "", "install the newest finished build"},
 		{"logs", "[id]", "print the raw build log"},
 	}
 	ui.Heading("Commands")

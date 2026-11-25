@@ -232,6 +232,8 @@ func writeRunning(b *strings.Builder, lane Lane) {
 	detail := "starting"
 	if lane.File != "" {
 		detail = strings.TrimSpace(lane.Verb + "  " + shortPath(lane.File))
+	} else if lane.Verb != "" {
+		detail = lane.Verb
 	} else if lane.Status == "succeeded" {
 		detail = "ready"
 	} else if lane.Status == "failed" {

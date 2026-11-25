@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Chris-Alexander-Pop/co/internal/archive"
+	"github.com/Chris-Alexander-Pop/co/internal/deps"
 )
 
 const (
@@ -31,6 +33,7 @@ const (
 	KindMakepkg  = "makepkg"
 	KindAur      = "aur"
 	KindStrategy = "strategy"
+	KindCommand  = "command"
 
 	// PullArtifact is the tarball of paths a strategy asked to bring back.
 	PullArtifact = "pull.tar.gz"
@@ -49,6 +52,8 @@ type Job struct {
 	Build         []string  `json:"build,omitempty"`
 	Pull          []string  `json:"pull,omitempty"`
 	KernelRelease string    `json:"kernelrelease,omitempty"`
+	Source        string    `json:"source,omitempty"`
+	Reused        bool      `json:"reused,omitempty"`
 	Status        string    `json:"status"`
 	Error         string    `json:"error,omitempty"`
 	Created       time.Time `json:"created"`
@@ -185,7 +190,7 @@ func (q *Queue) takeNext() string {
 }
 
 func exclusive(kind string) bool {
-	return kind == KindAur || kind == KindMakepkg
+	return kind == KindAur || kind == KindMakepkg || kind == KindCommand
 }
 
 func (q *Queue) execute(job *Job) {
@@ -207,6 +212,11 @@ func (q *Queue) execute(job *Job) {
 			if perr := q.stagePull(job); perr != nil {
 				err = perr
 			}
+		}
+	}
+	if err == nil && job.Kind == KindCommand {
+		if perr := q.stageCommandOutputs(job); perr != nil {
+			err = perr
 		}
 	}
 	if cerr := q.releaseWork(job.ID); cerr != nil {
@@ -242,30 +252,28 @@ func (q *Queue) wake() {
 }
 
 // SubmitAur enqueues a package the runner will clone from the AUR.
+// A package that is already queued or running is returned as-is.
 func (q *Queue) SubmitAur(name string) *Job {
 	job := q.newJob(KindAur, name, 0)
-	q.push(job)
+	if existing := q.claim(job); existing != nil {
+		return existing
+	}
+	q.release(job)
 	return job
 }
 
 // SubmitTree unpacks the archive, then enqueues the job so the worker cannot start early.
+// The same tree and kind returns the job already queued, running, or finished.
 func (q *Queue) SubmitTree(kind, name string, jobs int, tarGz []byte) (*Job, error) {
 	if kind != KindMake && kind != KindMakepkg {
 		return nil, fmt.Errorf("unknown kind %q", kind)
 	}
 	job := q.newJob(kind, name, jobs)
-	dir := filepath.Join(q.root, job.ID, "src")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	if err := archive.Unpack(bytes.NewReader(tarGz), dir); err != nil {
-		return nil, err
-	}
-	q.push(job)
-	return job, nil
+	return q.submitArchive(job, tarGz)
 }
 
 // SubmitStrategy unpacks the tree, then enqueues the build commands.
+// The same tree, commands, and pull list returns the existing job.
 func (q *Queue) SubmitStrategy(name string, jobs int, build, pull []string, tarGz []byte) (*Job, error) {
 	if len(build) == 0 {
 		return nil, fmt.Errorf("strategy has no build commands")
@@ -276,17 +284,114 @@ func (q *Queue) SubmitStrategy(name string, jobs int, build, pull []string, tarG
 		}
 	}
 	job := q.newJob(KindStrategy, name, jobs)
-	job.Build = build
+	job.Build = append([]string(nil), build...)
 	job.Pull = append([]string(nil), pull...)
+	return q.submitArchive(job, tarGz)
+}
+
+// SubmitCommand unpacks the tree and runs argv on the builder.
+// The same tree and argv returns the job already queued, running, or finished.
+func (q *Queue) SubmitCommand(name string, jobs int, argv []string, tarGz []byte) (*Job, error) {
+	if len(argv) == 0 || argv[0] == "" {
+		return nil, fmt.Errorf("no command")
+	}
+	job := q.newJob(KindCommand, name, jobs)
+	job.Build = append([]string(nil), argv...)
+	return q.submitArchive(job, tarGz)
+}
+
+// submitArchive records the tree, unpacks it, then lets the worker start.
+// A matching job is returned without unpacking over it.
+func (q *Queue) submitArchive(job *Job, tarGz []byte) (*Job, error) {
+	id, err := archive.ContentID(bytes.NewReader(tarGz))
+	if err != nil {
+		return nil, fmt.Errorf("tree: %w", err)
+	}
+	job.Source = id
+	if existing := q.claim(job); existing != nil {
+		return existing, nil
+	}
 	dir := filepath.Join(q.root, job.ID, "src")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		q.fail(job, err)
 		return nil, err
 	}
 	if err := archive.Unpack(bytes.NewReader(tarGz), dir); err != nil {
+		q.fail(job, err)
 		return nil, err
 	}
-	q.push(job)
+	q.release(job)
 	return job, nil
+}
+
+// claim keeps job when nothing identical is already queued, running, or finished.
+// The match is returned with Reused set, and its tree is left alone.
+func (q *Queue) claim(job *Job) *Job {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if existing := q.findSame(job); existing != nil {
+		cp := *existing
+		cp.Reused = true
+		return &cp
+	}
+	q.jobs[job.ID] = job
+	return nil
+}
+
+// findSame expects q.mu to be held. A failed job does not match, so it can be submitted again.
+func (q *Queue) findSame(job *Job) *Job {
+	var hit *Job
+	for _, cur := range q.jobs {
+		if cur.ID == job.ID || !sameWork(cur, job) {
+			continue
+		}
+		switch cur.Status {
+		case StatusRunning:
+			return cur
+		case StatusQueued:
+			if hit == nil || hit.Status != StatusQueued {
+				hit = cur
+			}
+		case StatusSucceeded:
+			if job.Kind == KindAur {
+				continue
+			}
+			if hit == nil || (hit.Status == StatusSucceeded && cur.Created.After(hit.Created)) {
+				hit = cur
+			}
+		}
+	}
+	return hit
+}
+
+func sameWork(cur, job *Job) bool {
+	if cur.Kind != job.Kind || cur.Name != job.Name {
+		return false
+	}
+	if cur.Kind == KindAur {
+		return true
+	}
+	if cur.Source == "" || cur.Source != job.Source {
+		return false
+	}
+	return slices.Equal(cur.Build, job.Build) && slices.Equal(cur.Pull, job.Pull)
+}
+
+// release lets the worker start a job that claim already recorded.
+func (q *Queue) release(job *Job) {
+	q.mu.Lock()
+	q.order = append(q.order, job.ID)
+	q.mu.Unlock()
+	_ = os.MkdirAll(filepath.Join(q.root, job.ID), 0o755)
+	q.wake()
+}
+
+func (q *Queue) fail(job *Job, err error) {
+	q.mu.Lock()
+	job.Status = StatusFailed
+	job.Error = err.Error()
+	job.Finished = time.Now()
+	q.mu.Unlock()
 }
 
 func (q *Queue) newJob(kind, name string, jobs int) *Job {
@@ -546,6 +651,8 @@ func DefaultRunner(job *Job, dir string, logf func(string)) error {
 			}
 		}
 		return nil
+	case KindCommand:
+		return runCommand(job, dir, logf)
 	default:
 		return fmt.Errorf("unknown kind %s", job.Kind)
 	}
@@ -553,33 +660,74 @@ func DefaultRunner(job *Job, dir string, logf func(string)) error {
 
 func buildEnv(jobs int) []string {
 	n := fmt.Sprintf("%d", jobs)
-	return append(os.Environ(),
-		"CO_JOBS="+n,
-		"MAKEFLAGS=-j"+n,
-		"NINJAFLAGS=-j"+n,
-		"CMAKE_BUILD_PARALLEL_LEVEL="+n,
-		"CCACHE_DIR=/var/cache/ccache",
-		"CCACHE_MAXSIZE=20G",
-	)
+	path := os.Getenv("PATH")
+	prefix := filepath.Join(deps.CargoHome, "bin")
+	if !strings.Contains(path, prefix) {
+		path = prefix + string(os.PathListSeparator) + path
+	}
+	return deps.MergeEnv(os.Environ(), map[string]string{
+		"PATH":                       path,
+		"RUSTUP_HOME":                deps.RustupHome,
+		"CARGO_HOME":                 deps.CargoHome,
+		"GOPATH":                     deps.GoPath,
+		"GOCACHE":                    deps.GoCache,
+		"CO_JOBS":                    n,
+		"MAKEFLAGS":                  "-j" + n,
+		"NINJAFLAGS":                 "-j" + n,
+		"CMAKE_BUILD_PARALLEL_LEVEL": n,
+		"CARGO_BUILD_JOBS":           n,
+		"CCACHE_DIR":                 "/var/cache/ccache",
+		"CCACHE_MAXSIZE":             "20G",
+	})
 }
 
 func runMakepkg(dir string, logf func(string), jobs int) error {
+	// --syncdeps installs against whatever is already in the container.
+	// Refreshing the database alone pulls a new library out from under a
+	// package that still requires the old soname, and skipping the refresh
+	// 404s on files the mirrors have replaced. Upgrade first.
+	if err := syncRepos(logf); err != nil {
+		return fmt.Errorf("pacman -Syu: %w", err)
+	}
 	n := fmt.Sprintf("%d", jobs)
 	_ = exec.Command("chown", "-R", "builder:builder", dir).Run()
+	// makepkg does not install without -i; a missing runtime dep must not throw away a finished package.
+	// The client pulls the file and installs it. pacman -U here is only so the
+	// next package on this builder can depend on it.
 	cmd := exec.Command("su", "-s", "/bin/bash", "builder", "-c",
 		"export CO_JOBS="+n+" MAKEFLAGS=-j"+n+" NINJAFLAGS=-j"+n+" CMAKE_BUILD_PARALLEL_LEVEL="+n+" CCACHE_DIR=/var/cache/ccache CCACHE_MAXSIZE=20G; makepkg -f --noconfirm --syncdeps")
 	cmd.Dir = dir
-	if err := runLogged(cmd, logf); err != nil {
+	buildErr := runLogged(cmd, logf)
+	pkgs, err := Packages(dir)
+	if err != nil {
 		return err
 	}
-	pkgs, err := Packages(dir)
-	if err != nil || len(pkgs) == 0 {
+	if err := builtEnough(buildErr, pkgs); err != nil {
 		return err
 	}
 	args := append([]string{"-U", "--noconfirm"}, pkgs...)
 	install := exec.Command("pacman", args...)
 	install.Dir = dir
-	return runLogged(install, logf)
+	if ierr := runLogged(install, logf); ierr != nil {
+		logf("builder install failed: " + ierr.Error())
+	}
+	return nil
+}
+
+// builtEnough keeps a finished package file even when makepkg's own install step failed.
+func builtEnough(buildErr error, pkgs []string) error {
+	if len(pkgs) > 0 {
+		return nil
+	}
+	if buildErr != nil {
+		return buildErr
+	}
+	return fmt.Errorf("makepkg produced no packages")
+}
+
+func syncRepos(logf func(string)) error {
+	cmd := exec.Command("pacman", "-Syu", "--noconfirm")
+	return runLogged(cmd, logf)
 }
 
 func runLogged(cmd *exec.Cmd, logf func(string)) error {

@@ -402,19 +402,19 @@ func jobLess(a, b queue.Job) bool {
 
 func newestJob(jobs []queue.Job, name string) *queue.Job {
 	sortJobs(jobs)
-	var match *queue.Job
-	for i := range jobs {
-		if name != "" && jobs[i].Name == name {
-			match = &jobs[i]
-		}
-	}
-	if match != nil {
-		return match
-	}
 	if len(jobs) == 0 {
 		return nil
 	}
-	return &jobs[len(jobs)-1]
+	if name == "" {
+		return &jobs[len(jobs)-1]
+	}
+	var match *queue.Job
+	for i := range jobs {
+		if jobs[i].Name == name {
+			match = &jobs[i]
+		}
+	}
+	return match
 }
 
 func logTail(s string, n int) string {

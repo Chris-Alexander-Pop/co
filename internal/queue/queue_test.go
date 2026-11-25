@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -316,6 +318,155 @@ func TestAurDoesNotOverlap(t *testing.T) {
 	}
 }
 
+func TestSameSourceReusesJob(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var runs atomic.Int32
+	q, err := newQueue(t.TempDir(), func(job *Job, src string, _ func(string)) error {
+		if runs.Add(1) == 1 {
+			if err := os.WriteFile(filepath.Join(src, "marker"), []byte("kept"), 0o644); err != nil {
+				t.Errorf("marker: %v", err)
+			}
+			close(started)
+			<-release
+		}
+		return nil
+	}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := packFile(t, "file.c", "int x;\n")
+	first, err := q.SubmitStrategy("zen", 1, []string{"make"}, []string{"file.c"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout")
+	}
+	again := packFile(t, "file.c", "int x;\n")
+	second, err := q.SubmitStrategy("zen", 2, []string{"make"}, []string{"file.c"}, again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID || !second.Reused {
+		t.Fatalf("second job = %+v, want reused %s", second, first.ID)
+	}
+	stored, ok := q.Get(first.ID)
+	if !ok || stored.Reused {
+		t.Fatalf("stored job leaked reused: ok=%v %+v", ok, stored)
+	}
+	marker, err := os.ReadFile(filepath.Join(q.SrcDir(first.ID), "marker"))
+	if err != nil || string(marker) != "kept" {
+		t.Fatalf("source marker = %q, err %v", marker, err)
+	}
+	if got := len(q.List()); got != 1 {
+		t.Fatalf("queued %d jobs", got)
+	}
+	changed := packFile(t, "file.c", "int y;\n")
+	other, err := q.SubmitStrategy("zen", 1, []string{"make"}, []string{"file.c"}, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ID == first.ID || other.Reused {
+		t.Fatalf("changed tree reused %+v", other)
+	}
+	cmds, err := q.SubmitStrategy("zen", 1, []string{"make olddefconfig"}, []string{"file.c"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmds.ID == first.ID || cmds.Reused {
+		t.Fatalf("different commands reused %+v", cmds)
+	}
+	close(release)
+	waitStatus(t, q, first.ID, StatusSucceeded)
+	waitStatus(t, q, other.ID, StatusSucceeded)
+	waitStatus(t, q, cmds.ID, StatusSucceeded)
+	before := runs.Load()
+	done, err := q.SubmitStrategy("zen", 1, []string{"make"}, []string{"file.c"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.ID != first.ID || !done.Reused {
+		t.Fatalf("finished job was not reused: %+v", done)
+	}
+	if runs.Load() != before {
+		t.Fatalf("reused finished job ran again: %d -> %d", before, runs.Load())
+	}
+}
+
+func TestFailedSourceCanRunAgain(t *testing.T) {
+	var runs atomic.Int32
+	q, err := newQueue(t.TempDir(), func(job *Job, _ string, _ func(string)) error {
+		runs.Add(1)
+		return fmt.Errorf("boom")
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := packFile(t, "file.c", "int x;\n")
+	first, err := q.SubmitStrategy("zen", 1, []string{"make"}, nil, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, q, first.ID, StatusFailed)
+	second, err := q.SubmitStrategy("zen", 1, []string{"make"}, nil, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID || second.Reused {
+		t.Fatalf("failed job was reused: %+v", second)
+	}
+	waitStatus(t, q, second.ID, StatusFailed)
+	if runs.Load() != 2 {
+		t.Fatalf("runs %d", runs.Load())
+	}
+}
+
+func TestSameAurPackageIsNotQueuedTwice(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	q, err := newQueue(t.TempDir(), func(job *Job, _ string, _ func(string)) error {
+		once.Do(func() { close(started) })
+		<-release
+		return nil
+	}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := q.SubmitAur("demo")
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout")
+	}
+	second := q.SubmitAur("demo")
+	if second.ID != first.ID || !second.Reused {
+		t.Fatalf("second aur = %+v", second)
+	}
+	close(release)
+	waitStatus(t, q, first.ID, StatusSucceeded)
+	third := q.SubmitAur("demo")
+	if third.ID == first.ID || third.Reused {
+		t.Fatalf("finished aur package was reused: %+v", third)
+	}
+}
+
+func packFile(t *testing.T, name, body string) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := archive.Pack(dir, &buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func waitStatus(t *testing.T, q *Queue, id, want string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -328,5 +479,95 @@ func waitStatus(t *testing.T, q *Queue, id, want string) {
 			t.Fatalf("job %s status timeout, last ok=%v", id, ok)
 		}
 		time.Sleep(15 * time.Millisecond)
+	}
+}
+
+func TestCommandEchoAndOutputs(t *testing.T) {
+	root := t.TempDir()
+	q, err := New(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := packFile(t, "a.txt", "a")
+	job, err := q.SubmitCommand("demo", 1, []string{"/bin/sh", "-c", "echo hi; mkdir -p target/release && printf x > target/release/demo && chmod +x target/release/demo"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, q, job.ID, StatusSucceeded)
+	log, err := os.ReadFile(q.LogPath(job.ID))
+	if err != nil || !strings.Contains(string(log), "hi") {
+		t.Fatalf("log %q err %v", log, err)
+	}
+	if _, err := os.Stat(q.SrcDir(job.ID)); !os.IsNotExist(err) {
+		t.Fatal("build tree was kept")
+	}
+	art := filepath.Join(q.artifactDir(job.ID), CommandArtifact)
+	if _, err := os.Stat(art); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCommandReusesSameArgv(t *testing.T) {
+	q, err := newQueue(t.TempDir(), func(job *Job, _ string, _ func(string)) error {
+		return nil
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := packFile(t, "a.txt", "a")
+	first, err := q.SubmitCommand("demo", 1, []string{"cargo", "build"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, q, first.ID, StatusSucceeded)
+	second, err := q.SubmitCommand("demo", 1, []string{"cargo", "build"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID || !second.Reused {
+		t.Fatalf("same command was not reused: %+v", second)
+	}
+	other, err := q.SubmitCommand("demo", 1, []string{"cargo", "test"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Reused || other.ID == first.ID {
+		t.Fatalf("different command reused %+v", other)
+	}
+	if _, err := q.SubmitCommand("demo", 1, nil, blob); err == nil {
+		t.Fatal("empty command was accepted")
+	}
+}
+
+func TestCopyChangedBins(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "old"), []byte("a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := snapBins(src)
+	if err := os.WriteFile(filepath.Join(src, "new"), []byte("b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "co-bin")
+	if err := copyChangedBins(dest, before, src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "new")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "old")); !os.IsNotExist(err) {
+		t.Fatal("old binary was copied")
+	}
+}
+
+func TestBuiltEnoughKeepsPackage(t *testing.T) {
+	if err := builtEnough(fmt.Errorf("exit status 1"), []string{"flutter.pkg.tar.zst"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builtEnough(fmt.Errorf("exit status 12"), nil); err == nil {
+		t.Fatal("expected the build error")
+	}
+	if err := builtEnough(nil, nil); err == nil {
+		t.Fatal("expected no packages")
 	}
 }

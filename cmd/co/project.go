@@ -70,6 +70,7 @@ func cmdProject(args []string) error {
 	if err != nil {
 		return err
 	}
+	noteSame(job)
 	if bg {
 		hintQueued(job.ID)
 		return nil
@@ -127,8 +128,15 @@ func cmdFinish(args []string) error {
 	if err != nil {
 		return err
 	}
-	job := newestJob(jobs, filepath.Base(wd))
+	name := ""
+	if file != nil {
+		name = filepath.Base(wd)
+	}
+	job := newestJob(jobs, name)
 	if job == nil {
+		if name != "" {
+			return fmt.Errorf("no job for %s", name)
+		}
 		return fmt.Errorf("queue empty")
 	}
 	if job.Status == queue.StatusQueued || job.Status == queue.StatusRunning {
@@ -141,6 +149,19 @@ func cmdFinish(args []string) error {
 	if job.Status != queue.StatusSucceeded {
 		return fmt.Errorf("job %s is %s", job.ID, job.Status)
 	}
+	if file == nil && job.Kind == queue.KindStrategy {
+		file, err = strategy.ByName(projects, job.Name)
+		if err != nil {
+			return err
+		}
+		if file == nil || file.Dir == "" {
+			return fmt.Errorf("no strategy named %s", job.Name)
+		}
+		wd, err = filepath.Abs(file.Dir)
+		if err != nil {
+			return err
+		}
+	}
 	if file != nil && job.Kind == queue.KindStrategy {
 		return deliver(cli, job, file, wd, cfg.Jobs)
 	}
@@ -150,6 +171,9 @@ func cmdFinish(args []string) error {
 			return err
 		}
 		return installPkgs(paths)
+	}
+	if job.Kind == queue.KindCommand {
+		return fetchCommandOutputs(cli, job.ID, wd)
 	}
 	return fmt.Errorf("job %s has nothing to install", job.ID)
 }

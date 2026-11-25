@@ -76,6 +76,48 @@ func Find(projectsDir, cwd string) (*File, error) {
 	return found, nil
 }
 
+// ByName returns the strategy for a finished job. The job name is the project
+// directory's base name, which is also the usual file name.
+func ByName(projectsDir, name string) (*File, error) {
+	if name == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var found *File
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		path := filepath.Join(projectsDir, e.Name())
+		f, err := load(path)
+		if err != nil {
+			return nil, err
+		}
+		stem := strings.TrimSuffix(e.Name(), ".yaml")
+		base := stem
+		if f.Dir != "" {
+			base = filepath.Base(f.Dir)
+		}
+		if base != name && stem != name {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("two strategies match %s (%s and %s)", name, found.path, f.path)
+		}
+		found = f
+	}
+	if found != nil && len(found.Build) == 0 {
+		return nil, fmt.Errorf("%s has no build commands", found.path)
+	}
+	return found, nil
+}
+
 func load(path string) (*File, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {

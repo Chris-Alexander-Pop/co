@@ -5,7 +5,47 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestContentIDIgnoresPackTime(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.c")
+	if err := os.WriteFile(path, []byte("int x;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := packID(t, root)
+	second := packID(t, root)
+	if first != second {
+		t.Fatalf("pack time changed the id\n%s\n%s", first, second)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := packID(t, root); got != first {
+		t.Fatalf("mtime changed the id\n%s\n%s", first, got)
+	}
+	if err := os.WriteFile(path, []byte("int y;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := packID(t, root); got == first {
+		t.Fatal("content change kept the same id")
+	}
+}
+
+func packID(t *testing.T, root string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := Pack(root, &buf); err != nil {
+		t.Fatal(err)
+	}
+	id, err := ContentID(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
 
 func TestRoundTrip(t *testing.T) {
 	root := t.TempDir()

@@ -1,0 +1,12 @@
+#!/bin/bash
+# makepkg does not fetch validpgpkeys on its own, and GnuPG has no default
+# keyserver. Pull those keys into the builder's keyring, then run makepkg.
+if [[ -f PKGBUILD ]]; then
+	validpgpkeys=()
+	# shellcheck disable=SC1091
+	source ./PKGBUILD
+	if (( ${#validpgpkeys[@]} )); then
+		gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "${validpgpkeys[@]}" || true
+	fi
+fi
+exec /usr/bin/makepkg.real "$@"

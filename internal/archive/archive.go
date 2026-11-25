@@ -3,10 +3,13 @@ package archive
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -137,6 +140,46 @@ func PackPaths(root string, rels []string, w io.Writer) error {
 		return err
 	}
 	return gz.Close()
+}
+
+// ContentID identifies the files in a gzipped tar. Timestamps and ownership
+// are ignored, so packing the same tree twice produces the same id.
+func ContentID(r io.Reader) (string, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return "", err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	type part struct {
+		name string
+		sum  [32]byte
+	}
+	var parts []part
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		h := sha256.New()
+		fmt.Fprintf(h, "%c\n%o\n%s\n", hdr.Typeflag, hdr.Mode, hdr.Linkname)
+		if _, err := io.Copy(h, tr); err != nil {
+			return "", err
+		}
+		var sum [32]byte
+		copy(sum[:], h.Sum(nil))
+		parts = append(parts, part{name: hdr.Name, sum: sum})
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i].name < parts[j].name })
+	out := sha256.New()
+	for _, p := range parts {
+		fmt.Fprintf(out, "%s\n", p.name)
+		out.Write(p.sum[:])
+	}
+	return hex.EncodeToString(out.Sum(nil)), nil
 }
 
 // Unpack extracts a gzipped tar into dest. Paths that escape dest are rejected.
